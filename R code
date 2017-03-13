@@ -1,0 +1,458 @@
+echo "# customer-respond-identification" >> R code
+ - Data Loading and data understanding
+
+
+```{r,echo=FALSE, message=FALSE}
+library(randomForest)
+library(caret)
+library(glmnet)
+library(xgboost)
+library(ggplot2)
+library(gridExtra)
+library(sm)
+set.seed(12345)
+```
+
+
+
+```{r,echo=FALSE, message=FALSE}
+train = read.csv(file.choose(),header=T,sep=",")
+test = read.csv(file.choose(),header=T,sep=",")
+summary(train)
+#Data preparation
+#In this work, we analyse the use of the k-nearest neighbour as an imputation method for #missing data.
+#The main benefits for kNN:
+#k-nearest neighbour can predict both discrete attributes (the most frequent value
+#among the k nearest neighbours) and continuous attributes (the mean among the k
+#nearest neighbours);
+
+
+#prepare the data
+
+library(VIM)
+train.csv <- kNN(train,variable=c("custAge","schooling","day_of_week"),k=6)
+test.csv<-kNN(test,variable=c("custAge","schooling","day_of_week"),k=6)
+
+write.csv(train.csv,"E:/uptake/trainimpute.csv" )
+write.csv(test.csv,"E:/uptake/testimpute.csv" )
+train.csv = read.csv(file.choose(),header=T,sep=",")
+test.csv = read.csv(file.choose(),header=T,sep=",")
+
+
+summary(train.csv)
+str(train)
+table(train$responded)
+```
+
+Exploratory Data Analysis
+```{r,echo=FALSE, message=FALSE}
+train.csv$responded = as.factor(train$responded)
+qplot(previous,data=train.csv,facets=responded~.,geom='bar', color=responded, 
+         xlab="previous ")
+
+#According to plot # of previous VS responded, we see that #=2 has almost the same counts of response.
+
+qplot(profession,data=train.csv,facets=responded~.,geom='bar', color=responded, 
+      xlab="profession ")
+#According to plot profession VS responded, we see that student has almost the same counts of response.
+
+qplot(custAge,data=train.csv,facets=responded~.,geom='bar', color=responded, 
+      xlab="custAge ") 
+
+##According to plot of the age of the customer VS responded, we see that younger customer has more yes  response.  
+
+qplot(pmonths,data=train.csv,facets=responded~.,geom='bar', color=responded, 
+      xlab="pmonths")
+
+qplot(euribor3m,data=train.csv,facets=responded~.,geom='bar', color=responded, 
+      xlab="euribor3m")
+
+
+##According to plot of the age of the euribor3m VS responded, we see that 1.3 or 4.2 has more yes response. 
+
+qplot(marital,data=train.csv,facets=responded~.,geom='bar', color=responded, 
+      xlab="marital")
+
+
+
+# plot densities of age vs responded
+sm.density.compare(train.csv$custAge, train.csv$responded, xlab="custAge")
+title(main="The Distribution of Customer Age by Responded")
+legend("topleft",levels(train.csv$responded),fill=c(2:6))
+
+# plot densities of campaign vs responded
+sm.density.compare(train.csv$campaign, train.csv$responded, xlab="campaign")
+title(main="Campaign Distribution by Responded")
+legend("topleft",levels(train.csv$responded),fill=c(2:6))
+```
+ 
+ 
+Modeling and Evaluation 
+
+
+
+Using Lasso for feature selection and prediction
+```{r,echo=FALSE, message=FALSE} 
+ 
+train.lasso <- train.csv[1:22]
+test.lasso <- test.csv[1:21]
+#summary of train.lasso
+summary(train.lasso)
+str(train.lasso)
+
+table(train.lasso$pdays)
+
+
+
+x=model.matrix(responded~.,train.lasso)[,-1]
+y=train.lasso$responded
+
+
+#create the grid for the lambda 
+grid=10^seq(10,-2,length=100)
+
+
+trainL=sample(1:nrow(x), nrow(x)/2)
+testL=(-trainL)
+y.test=y[testL]
+
+# The Lasso
+
+lasso.sample=glmnet(x[trainL,],y[trainL],alpha=1,lambda=grid,family="binomial")
+plot(lasso.sample)
+
+cv.out.sample=cv.glmnet(x[trainL,],y[trainL],alpha=1,type.measure = "class",family="binomial")
+plot(cv.out.sample)
+bestlam.sample=cv.out.sample$lambda.min
+  
+lasso.pred=predict(lasso.sample,s=bestlam.sample,newx=x[testL,],type = "class")
+table(pred=lasso.pred, true= y.test)#to get the confusion matrix
+
+#prediction using lasso
+
+out=glmnet(x,y,alpha=1,lambda=grid,family="binomial")
+plot(out)
+cv.out=cv.glmnet(x,y,alpha=1,type.measure = "class",family="binomial")
+plot(cv.out)
+bestlam=cv.out$lambda.min
+ 
+lasso.coef=predict(out,type="coefficients",s=bestlam)[1:20,]
+lasso.coef
+lasso.coef[lasso.coef!=0]
+ 
+
+coef(cv.out, s = "lambda.min")
+test.lasso$responded <- 0
+
+xNew=model.matrix(responded~.,test.lasso)[,-1]
+yNew=test.lasso$responded 
+prediction.lasso=predict(out, type="class",s=bestlam, newx = xNew)
+
+table(prediction.lasso)
+  
+ 
+```
+
+
+Using randomforest for prediction and feature engineering
+```{r,echo=FALSE, message=FALSE}
+train.rf <- train.csv[1:22]
+test.rf <- test.csv[1:21]
+
+model.rforest <-randomForest(train.rf$responded~.,data=train.rf[,1:21],importance=T,ntree=1000)
+######the top 10 important variables
+importance(model.rforest)
+varImpPlot(model.rforest,type=2,n.var=10)
+varImpPlot(model.rforest,type=2)
+
+
+rforest.pred = predict(model.rforest,test.rf[,1:21])
+
+
+summary(rforest.pred)
+
+
+#custAge
+#profession
+#euribor3m
+```
+
+
+
+
+-Code to look at correlated pairs 
+
+
+-Using xgboost for feature selection and prediction and cross validation for parameter tuning
+
+
+```{r,echo=FALSE, message=FALSE} 
+# pairs of columns
+
+corX <- data.frame(model.matrix(responded~.,train.csv[1:22])[,-1])
+ 
+feature.pairs <- combn(x = names(corX), m = 2, simplify = F) #T gives matrix, F gives list
+#remove columns that are "absolutely correlated"
+correlated.pairs <- matrix(nrow = 2) #create an empty matrix
+for(pair in feature.pairs) {
+  f1 <- pair[1]
+  f2 <- pair[2]
+  if (abs(cor(corX[[f1]] , corX[[f2]])) == 1) {
+    cat(f1, "and", f2, "are absolutely correlated \n")
+    correlated.pairs <- cbind(correlated.pairs, c(f1,f2))
+  }else if(abs(cor(corX[[f1]] , corX[[f2]])) > 0.8 & abs(cor(corX[[f1]] , corX[[f2]])) <1)
+{
+    cat(f1, "and", f2, "are very correlated \n")
+    correlated.pairs <- cbind(correlated.pairs, c(f1,f2))
+  }
+}
+
+
+pairs(~housingunknown+loanunknown+pdays+poutcomesuccess+pmonths+previous
+      +poutcomenonexistent+emp.var.rate+euribor3m+nr.employed,data=corX, 
+       main="Scatterplot of Highly Correlated Features")
+ 
+traincor <- train.csv[,1:22] 
+testcor<-test.csv[,1:21]
+testcor$responded<-'no'
+
+
+all  <- rbind(traincor, testcor)
+xxx=model.matrix(responded~.,all)[,-1]
+ 
+# remove higly correlated variables
+cor_v<-abs(cor(xxx))
+diag(cor_v)<-0
+cor_v[upper.tri(cor_v)] <- 0
+cor_f <- data.frame(which(cor_v > 0.8, arr.ind = T))
+xxxnew <- xxx[,-c(unique(cor_f$row))]
+
+# Splitting the data for model
+
+train_sub1 <- xxxnew[1:nrow(train.csv), ]
+test_sub1 <- xxxnew[-(1:nrow(train.csv)), ]
+
+#Building the model
+
+
+y <- c()
+for(i in 1:length(train$id))
+{
+  if(train$responded[i]=='yes'){
+    y<-c(y,1)
+  }else
+  {y<-c(y,0)}
+}
+
+
+param <- list("objective" = "binary:logistic",booster = "gbtree",
+              "eval_metric" = "auc",colsample_bytree = 0.85, subsample = 0.95)
+
+
+xgbmodel <- xgboost(data = train_sub1, params = param,
+                    nrounds = 300, max.depth = 5, eta = 0.01,
+                    label = y, maximize = T)
+ 
+
+#Prediction
+res <- predict(xgbmodel, newdata = test_sub1)
+summary(res)
+prediction_xg <- as.numeric(res > 0.5)
+table(prediction_xg)
+ 
+# running cross validation for parameter tuning with respect to error
+dtrain <- xgb.DMatrix(train_sub1, label = y)
+ 
+nround <- 300
+param <- list("objective" = "binary:logistic",booster = "gbtree",
+              "eval_metric" = "auc",colsample_bytree = 0.85, subsample = 0.95)
+
+cat('running cross validation\n')
+# do cross validation, this will print result out as
+# [iteration]  metric_name:mean_value+std_value
+# std_value is standard deviation of the metric
+xgb.cv(param, dtrain, nround, nfold=8, metrics={'error'})
+
+tuningpa<- xgb.cv(param, dtrain, nround, nfold=8, metrics={'error'})
+
+tuningpa$test.error.mean
+which.min(tuningpa$test.error.mean)
+plot(tuningpa$test.error.mean)
+
+xgbmodelopt <- xgboost(data = train_sub1, params = param,
+                       nrounds = 29, max.depth = 5, eta = 0.01,
+                       label = y, maximize = T)
+
+
+#Prediction
+resopt <- predict(xgbmodelopt, newdata = test_sub1)
+
+prediction_xgopt <- as.numeric(res > 0.5)
+table(prediction_xgopt)
+ 
+#cross validation for tuning parameters with respect to auc
+
+
+param <- list("objective" = "binary:logistic",booster = "gbtree",
+              "eval_metric" = "auc",colsample_bytree = 0.85, subsample = 0.95)
+
+cat('running cross validation\n')
+# do cross validation, this will print result out as
+# [iteration]  metric_name:mean_value+std_value
+# std_value is standard deviation of the metric
+
+tuningpaauc<- xgb.cv(param, dtrain, nround, nfold=8, metrics={'auc'})
+ 
+tuningpaauc$test.auc.mean
+which.min(tuningpaauc$test.auc.mean)
+plot(tuningpaauc$test.auc.mean)
+
+# then choose nround=284
+
+xgbmodelopt <- xgboost(data = train_sub1, params = param,
+                       nrounds = 284, max.depth = 5, eta = 0.01,
+                       label = y, maximize = T)
+
+
+#Prediction
+resopt284 <- predict(xgbmodelopt, newdata = test_sub1)
+summary(resopt284)
+prediction_xgopt284 <- as.numeric(resopt284 > 0.5)
+table(prediction_xgopt284)
+
+
+#feature selection according to importance
+importance_matrix <- xgb.importance(colnames(train_sub1), model = xgbmodelopt)
+importance_matrix$Feature <- factor(importance_matrix$Feature, levels = importance_matrix$Feature[order(importance_matrix$Gain)])
+
+ggplot(importance_matrix, aes(x = Gain, y = Feature)) + theme_bw() + geom_point()
+
+
+```
+
+
+
+```{r,echo=FALSE, message=FALSE}
+ 
+# #Combine all the data set and split them
+# 
+# all <- rbind(train.csv[,1:21], test.csv[,1:21])
+#  
+# # Splitting the data for model
+# 
+# train_sub <- all[1:nrow(train.csv), ]
+# test_sub <- all[-(1:nrow(train.csv)), ]
+ 
+ 
+
+#Using PCA analysis 
+pca.all<-rbind(train.csv[,1:21], test.csv[,1:21])
+# calculate the pre-process parameters from the dataset
+preprocessParams <- preProcess(pca.all, method=c("center", "scale", "pca"))
+# summarize transform parameters
+print(preprocessParams)
+# transform the dataset using the parameters
+PC <- predict(preprocessParams, pca.all)
+# summarize the transformed dataset
+summary(PC)
+ 
+   
+
+train_subpca <- PC[1:nrow(train.csv), ]
+test_subpca <- PC[-(1:nrow(train.csv)), ]
+
+train_subpca$responded<-train.csv$responded
+df.rf1<-randomForest(train_subpca$responded~.,data=train_subpca[,1:(ncol(train_subpca)-1)],importance=T,ntree=1000)
+rforest.pred = predict(df.rf1,test_subpca)
+table(rforest.pred)
+
+###########model validation
+
+trainRF=sample(1:nrow(train_subpca), nrow(train_subpca)/2)
+testRF=(-trainRF)
+y.testRF=train_subpca[testRF,]
+x.trainRF=train_subpca[trainRF,]
+
+# The randomforest
+
+df.rftest<-randomForest(x.trainRF$responded~.,data=x.trainRF[,1:(ncol(x.trainRF)-1)],ntree=1000)
+rforest.prediction = predict(df.rftest,y.testRF)
+ 
+ 
+table(pred=rforest.prediction, true= y.testRF$responded)#to get the confusion matrix
+
+#########
+# trainRF=sample(1:nrow(train_subpca), nrow(train_subpca)*2/3)
+# testRF=(-trainRF)
+# y.testRF=train_subpca[testRF,]
+# x.trainRF=train_subpca[trainRF,]
+# 
+# # The randomforest
+# 
+# df.rftest<-randomForest(x.trainRF$responded~.,data=x.trainRF[,1:(ncol(x.trainRF)-1)],ntree=1000)
+# rforest.prediction = predict(df.rftest,y.testRF)
+#  
+#  
+# table(pred=rforest.prediction, true= y.testRF$responded)#to get the confusion matrix
+
+#########not using PCA, there is no loss
+
+train.rf <- train.csv[1:22]
+ 
+ 
+y.testRF=train.rf[testRF,]
+x.trainRF=train.rf[trainRF,]
+ 
+# The randomforest
+
+df.rftest<-randomForest(x.trainRF$responded~.,data=x.trainRF[,1:(ncol(x.trainRF)-1)],ntree=1000)
+rforest.prediction = predict(df.rftest,y.testRF)
+ 
+ 
+table(pred=rforest.prediction, true= y.testRF$responded)#to get the confusion matrix
+
+#model comparison
+x.trainXG <- model.matrix(responded~.,x.trainRF)[,-1]
+ 
+
+ 
+y.testXG=model.matrix(responded~.,y.testRF)[,-1]
+ 
+y.lable <- y.testRF$responded
+
+y <- c()
+for(i in 1:length(y.lable))
+{
+  if(y.lable[i]=='yes'){
+    y<-c(y,1)
+  }else
+  {y<-c(y,0)}
+}
+ 
+y1<- c()
+for(i in 1:length(x.trainRF$responded))
+{
+  if(x.trainRF$responded[i]=='yes'){
+    y1<-c(y1,1)
+  }else
+  {y1<-c(y1,0)}
+}
+ 
+# The xgboost
+
+df.xgtest<-xgboost(data = x.trainXG, params = param,
+                       nrounds = 300, max.depth = 5, eta = 0.01,
+                       label = y1, maximize = T)
+
+xg.prediction = predict(df.xgtest, newdata = y.testXG)
+ 
+ 
+table(pred=as.numeric(xg.prediction > 0.5), true=y)#to get the confusion matrix
+
+#     true
+# pred    0    1
+#    0 3588  364
+#    1   55  112
+ 
+```
+
